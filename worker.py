@@ -9,9 +9,10 @@ import os
 import re
 import sqlite3
 import time
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from types import SimpleNamespace
+from typing import TypedDict, cast
 from urllib.parse import urlsplit
 
 import requests
@@ -26,21 +27,38 @@ class TelegramRejected(Exception):
     """Telegram definitively refused a request, so it may be retried."""
 
 
+class StoryRecord(TypedDict):
+    id: str
+    type: str
+    url: str
+    taken_at: str | float
+    expiring_at: str | float
+
+
+@dataclass
+class Story:
+    mediaid: str
+    is_video: bool
+    url: str
+    video_url: str
+    date_utc: float
+
+
 class ViewerPage(HTMLParser):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.csrf = None
-        self.profile = None
+        self.csrf: str | None = None
+        self.profile: dict[str, str | None] | None = None
 
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "meta" and attrs.get("name") == "csrf-token":
-            self.csrf = attrs.get("content")
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "meta" and attributes.get("name") == "csrf-token":
+            self.csrf = attributes.get("content")
         elif tag == "profile-page":
-            self.profile = attrs
+            self.profile = attributes
 
 
-def fetch_stories(handle):
+def fetch_stories(handle: str) -> list[Story]:
     # shortcut: undocumented viewer endpoints may change; update on a fetch/schema error.
     origin = "https://storynavigation.com"
     with requests.Session() as session:
@@ -73,7 +91,10 @@ def fetch_stories(handle):
         else:
             if not attrs.get("user-found-prop"):
                 raise ValueError("Public Instagram account not found")
-            profile = json.loads(attrs["v-bind:user-info-prop"])
+            profile_json = attrs.get("v-bind:user-info-prop")
+            if profile_json is None:
+                raise ValueError("Viewer page is missing profile data")
+            profile = json.loads(profile_json)
         if profile.get("isPrivate") is not False:
             raise ValueError("Only public Instagram accounts are supported")
         if profile["username"].lower() != handle.lower():
@@ -88,10 +109,11 @@ def fetch_stories(handle):
             timeout=(10, 60),
         )
         response.raise_for_status()
-        records = response.json()["lastStories"]
-    if not isinstance(records, list):
+        raw_records = response.json()["lastStories"]
+    if not isinstance(raw_records, list):
         raise TypeError("Viewer returned an invalid story list")
-    items = []
+    records = cast(list[StoryRecord], raw_records)
+    items: list[Story] = []
     for record in records:
         identifier = re.fullmatch(r"([0-9]+)(?:_[0-9]+)?", record["id"])
         if identifier is None or record["type"] not in ("image", "video"):
@@ -110,7 +132,7 @@ def fetch_stories(handle):
         if float(record["expiring_at"]) <= time.time():
             continue
         items.append(
-            SimpleNamespace(
+            Story(
                 mediaid=identifier[1],
                 is_video=record["type"] == "video",
                 url=url,
@@ -121,7 +143,7 @@ def fetch_stories(handle):
     return items
 
 
-def open_database(path):
+def open_database(path: Path) -> sqlite3.Connection:
     db = sqlite3.connect(path)
     db.execute("""CREATE TABLE IF NOT EXISTS stories (
         channel TEXT NOT NULL, story_id TEXT NOT NULL,
@@ -132,7 +154,7 @@ def open_database(path):
     return db
 
 
-def send_story(token, channel, path, is_video):
+def send_story(token: str, channel: str, path: Path, is_video: bool) -> int:
     kind = "video" if is_video else "photo"
     response = requests.post(
         f"{API}/bot{token}/send{kind.title()}",
@@ -149,10 +171,19 @@ def send_story(token, channel, path, is_video):
                 time.sleep(min(int(retry_after), 3600))
             raise TelegramRejected(f"Telegram rejected story (error {code})")
         raise RuntimeError("Uncertain Telegram response; inspect pending stories")
-    return result["result"]["message_id"]
+    message_id = result["result"]["message_id"]
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        raise ValueError("Telegram returned an invalid message ID")
+    return message_id
 
 
-def publish(db, channel, item, token, media_dir=MEDIA):
+def publish(
+    db: sqlite3.Connection,
+    channel: str,
+    item: Story,
+    token: str,
+    media_dir: Path = MEDIA,
+) -> None:
     story_id = str(item.mediaid)
     key = (channel, story_id)
     row = db.execute(
@@ -199,7 +230,7 @@ def publish(db, channel, item, token, media_dir=MEDIA):
     LOG.info("Posted story %s as message %s", story_id, message_id)
 
 
-def poll(db, handle, channel, token):
+def poll(db: sqlite3.Connection, handle: str, channel: str, token: str) -> bool:
     items = fetch_stories(handle)
     failed = False
     for item in sorted(items, key=lambda item: item.date_utc):
@@ -217,14 +248,14 @@ def poll(db, handle, channel, token):
     return not failed
 
 
-def required_env(name):
+def required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
         raise ValueError(f"Set {name}")
     return value
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",

@@ -96,12 +96,17 @@ For one pass instead of the regular loop, stop the worker and run:
 docker compose run --rm worker once
 ```
 
-## Tests
+## Development checks
 
+Ruff checks lint and formatting; Pyright checks both Python files in strict mode. The Pyright configuration also enables strict checking in VS Code/Pylance.
+Select `.venv/bin/python` as the VS Code Python interpreter.
 Tests mock both services; they do not log in or publish anything:
 
 ```sh
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/pyright
 .venv/bin/python -m unittest -v
 ```
