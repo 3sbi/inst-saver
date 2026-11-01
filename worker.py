@@ -2,14 +2,14 @@
 
 import argparse
 import base64
-from html.parser import HTMLParser
-import json
 import fcntl
+import json
 import logging
 import os
 import re
 import sqlite3
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -50,13 +50,21 @@ def fetch_stories(handle):
         parser.feed(page.text)
         if not parser.csrf or parser.profile is None:
             raise ValueError("Viewer page changed or blocked the request")
-        session.headers.update({"X-CSRF-TOKEN": parser.csrf,
-                                "X-Requested-With": "XMLHttpRequest",
-                                "Referer": page.url, "Accept": "application/json"})
+        session.headers.update(
+            {
+                "X-CSRF-TOKEN": parser.csrf,
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": page.url,
+                "Accept": "application/json",
+            }
+        )
         attrs = parser.profile
         if attrs.get("need-to-parse-user-info-prop"):
-            response = session.post(f"{origin}/get-user-profile",
-                                    json={"userName": handle}, timeout=(10, 60))
+            response = session.post(
+                f"{origin}/get-user-profile",
+                json={"userName": handle},
+                timeout=(10, 60),
+            )
             response.raise_for_status()
             result = response.json()
             if result.get("found") is not True:
@@ -72,13 +80,17 @@ def fetch_stories(handle):
             raise ValueError("Viewer returned a different account")
         response = session.post(
             f"{origin}/get-user-last-stories",
-            json={"userName": handle, "isPrivate": False, "instagramUserId": profile["id"]},
+            json={
+                "userName": handle,
+                "isPrivate": False,
+                "instagramUserId": profile["id"],
+            },
             timeout=(10, 60),
         )
         response.raise_for_status()
         records = response.json()["lastStories"]
     if not isinstance(records, list):
-        raise ValueError("Viewer returned an invalid story list")
+        raise TypeError("Viewer returned an invalid story list")
     items = []
     for record in records:
         identifier = re.fullmatch(r"([0-9]+)(?:_[0-9]+)?", record["id"])
@@ -86,14 +98,26 @@ def fetch_stories(handle):
             raise ValueError("Viewer returned an invalid story ID or media type")
         url = base64.b64decode(record["url"], validate=True).decode("utf-8")
         parsed = urlsplit(url)
-        if (parsed.scheme != "https" or not parsed.hostname
-                or not parsed.hostname.endswith((".cdninstagram.com", ".fbcdn.net"))
-                or parsed.username or parsed.password or parsed.port not in (None, 443)):
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or not parsed.hostname.endswith((".cdninstagram.com", ".fbcdn.net"))
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 443)
+        ):
             raise ValueError("Viewer returned an unexpected media host")
         if float(record["expiring_at"]) <= time.time():
             continue
-        items.append(SimpleNamespace(mediaid=identifier[1], is_video=record["type"] == "video",
-                                     url=url, video_url=url, date_utc=float(record["taken_at"])))
+        items.append(
+            SimpleNamespace(
+                mediaid=identifier[1],
+                is_video=record["type"] == "video",
+                url=url,
+                video_url=url,
+                date_utc=float(record["taken_at"]),
+            )
+        )
     return items
 
 
@@ -181,11 +205,14 @@ def poll(db, handle, channel, token):
     for item in sorted(items, key=lambda item: item.date_utc):
         try:
             publish(db, channel, item, token)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- Keep polling without logging credential-bearing errors.
             failed = True
             # Request exceptions include URLs with tokens/cookies; never print them.
-            LOG.error("Story %s failed (%s); will check again next poll",
-                      item.mediaid, type(error).__name__)
+            LOG.error(
+                "Story %s failed (%s); will check again next poll",
+                item.mediaid,
+                type(error).__name__,
+            )
     LOG.info("Poll finished: %s currently visible stories", len(items))
     return not failed
 
@@ -199,12 +226,18 @@ def required_env(name):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", default="run",
-                        choices=["run", "once", "pending", "resolve"])
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="run",
+        choices=["run", "once", "pending", "resolve"],
+    )
     parser.add_argument("story_id", nargs="?")
     parser.add_argument("resolution", nargs="?", choices=["sent", "retry"])
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     DATA.mkdir(parents=True, exist_ok=True)
     MEDIA.mkdir(parents=True, exist_ok=True)
     with (DATA / "worker.lock").open("w") as lock:
@@ -216,7 +249,8 @@ def main():
             channel = required_env("TELEGRAM_CHANNEL")
             if args.command == "pending":
                 for row in db.execute(
-                    "SELECT story_id FROM stories WHERE channel=? AND status='pending'", (channel,)
+                    "SELECT story_id FROM stories WHERE channel=? AND status='pending'",
+                    (channel,),
                 ):
                     print(row[0])
                 return
@@ -225,11 +259,15 @@ def main():
                     parser.error("resolve requires STORY_ID sent|retry")
                 with db:
                     if args.resolution == "sent":
-                        db.execute("UPDATE stories SET status='sent' WHERE channel=? AND story_id=? AND status='pending'",
-                                   (channel, args.story_id))
+                        db.execute(
+                            "UPDATE stories SET status='sent' WHERE channel=? AND story_id=? AND status='pending'",
+                            (channel, args.story_id),
+                        )
                     else:
-                        db.execute("DELETE FROM stories WHERE channel=? AND story_id=? AND status='pending'",
-                                   (channel, args.story_id))
+                        db.execute(
+                            "DELETE FROM stories WHERE channel=? AND story_id=? AND status='pending'",
+                            (channel, args.story_id),
+                        )
                 return
 
             handle = required_env("INSTAGRAM_HANDLE").lstrip("@")
@@ -244,9 +282,11 @@ def main():
                     success = poll(db, handle, channel, token)
                     if args.command == "once" and not success:
                         raise SystemExit(1)
-                except Exception as error:
-                    LOG.error("Poll failed (%s); check viewer availability and connectivity",
-                              type(error).__name__)
+                except Exception as error:  # noqa: BLE001 -- Keep polling without logging credential-bearing errors.
+                    LOG.error(
+                        "Poll failed (%s); check viewer availability and connectivity",
+                        type(error).__name__,
+                    )
                     if args.command == "once":
                         raise SystemExit(1) from None
                 if args.command == "once":

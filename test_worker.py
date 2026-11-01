@@ -121,9 +121,7 @@ class WorkerTests(unittest.TestCase):
 
     @patch("worker.publish")
     @patch("worker.fetch_stories")
-    def test_poll_posts_oldest_first_and_continues_after_failure(
-        self, fetch, publish
-    ):
+    def test_poll_posts_oldest_first_and_continues_after_failure(self, fetch, publish):
         older = SimpleNamespace(mediaid=1, date_utc=datetime(2026, 1, 1))
         newer = SimpleNamespace(mediaid=2, date_utc=datetime(2026, 1, 2))
         fetch.return_value = [newer, older]
@@ -144,29 +142,42 @@ class FetchStoriesTests(unittest.TestCase):
         self.addCleanup(clock.stop)
         self.profile = {"id": 456, "username": "source", "isPrivate": False}
         self.page()
-        self.record = {"id": "123_456", "type": "video", "taken_at": 900,
-                       "expiring_at": 2000,
-                       "url": base64.b64encode(b"https://scontent.cdninstagram.com/story.mp4").decode()}
-        self.session.post.return_value.json.return_value = {"lastStories": [self.record]}
+        self.record = {
+            "id": "123_456",
+            "type": "video",
+            "taken_at": 900,
+            "expiring_at": 2000,
+            "url": base64.b64encode(
+                b"https://scontent.cdninstagram.com/story.mp4"
+            ).decode(),
+        }
+        self.session.post.return_value.json.return_value = {
+            "lastStories": [self.record]
+        }
 
     def page(self, needs_profile=False):
         self.session.get.return_value.text = (
             '<meta name="csrf-token" content="anonymous-csrf">'
             '<profile-page user-found-prop="1" need-to-parse-user-info-prop="'
-            + ("1" if needs_profile else "") + '" v-bind:user-info-prop="'
-            + html.escape(json.dumps(self.profile), quote=True) + '"></profile-page>'
+            + ("1" if needs_profile else "")
+            + '" v-bind:user-info-prop="'
+            + html.escape(json.dumps(self.profile), quote=True)
+            + '"></profile-page>'
         )
         self.session.get.return_value.url = "https://storynavigation.com/user/source"
 
     def test_fetch_uses_anonymous_session_and_preserves_instagram_id(self):
-        item, = worker.fetch_stories("source")
-        self.assertEqual((item.mediaid, item.is_video, item.date_utc), ("123", True, 900))
+        (item,) = worker.fetch_stories("source")
+        self.assertEqual(
+            (item.mediaid, item.is_video, item.date_utc), ("123", True, 900)
+        )
         self.assertEqual(item.video_url, "https://scontent.cdninstagram.com/story.mp4")
         self.session.headers.update.assert_called_once()
         self.session.post.assert_called_once_with(
             "https://storynavigation.com/get-user-last-stories",
             json={"userName": "source", "isPrivate": False, "instagramUserId": 456},
-            timeout=(10, 60))
+            timeout=(10, 60),
+        )
 
     def test_photo_and_expired_stories(self):
         self.record["type"] = "image"
@@ -177,20 +188,27 @@ class FetchStoriesTests(unittest.TestCase):
     def test_empty_list_is_valid_but_error_response_is_not(self):
         self.session.post.return_value.json.return_value = {"lastStories": []}
         self.assertEqual(worker.fetch_stories("source"), [])
-        self.session.post.return_value.json.return_value = {"error": "temporarily unavailable"}
+        self.session.post.return_value.json.return_value = {
+            "error": "temporarily unavailable"
+        }
         with self.assertRaises(KeyError):
             worker.fetch_stories("source")
 
     def test_uncached_profile_is_resolved_before_loading_stories(self):
         self.page(needs_profile=True)
         profile_response = MagicMock()
-        profile_response.json.return_value = {"found": True, "accountInfo": self.profile}
+        profile_response.json.return_value = {
+            "found": True,
+            "accountInfo": self.profile,
+        }
         stories_response = MagicMock()
         stories_response.json.return_value = {"lastStories": []}
         self.session.post.side_effect = [profile_response, stories_response]
         self.assertEqual(worker.fetch_stories("source"), [])
-        self.assertEqual(self.session.post.call_args_list[0].args[0],
-                         "https://storynavigation.com/get-user-profile")
+        self.assertEqual(
+            self.session.post.call_args_list[0].args[0],
+            "https://storynavigation.com/get-user-profile",
+        )
 
     def test_private_profile_and_changed_page_are_rejected(self):
         self.profile["isPrivate"] = True
@@ -203,9 +221,12 @@ class FetchStoriesTests(unittest.TestCase):
             worker.fetch_stories("source")
 
     def test_invalid_id_type_and_media_host_are_rejected(self):
-        for field, value in [("id", "../other"), ("type", "unknown"),
-                             ("url", base64.b64encode(b"http://127.0.0.1/private").decode()),
-                             ("url", "not base64")]:
+        for field, value in [
+            ("id", "../other"),
+            ("type", "unknown"),
+            ("url", base64.b64encode(b"http://127.0.0.1/private").decode()),
+            ("url", "not base64"),
+        ]:
             with self.subTest(field=field, value=value):
                 original = self.record[field]
                 self.record[field] = value
